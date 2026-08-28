@@ -52,6 +52,9 @@
     <Reference Include="fxcore2">
       <HintPath>..\..\..\..\..\Program Files\Candleworks\ForexConnectAPIx64\bin\net\dotnet45\fxcore2.dll</HintPath>
     </Reference>
+    <Reference Include="pricehistorymgr_net">
+      <HintPath>..\..\..\..\..\Program Files\Candleworks\ForexConnectAPIx64\bin\net\dotnet45\pricehistorymgr_net.dll</HintPath>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Xml.Linq" />
@@ -62,9 +65,14 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="FXCMChartData.cs" />
     <Compile Include="FXCMConnection.cs" />
     <Compile Include="FXCMMarketData.cs" />
+    <Compile Include="FXCMPriceHistory.cs" />
+    <Compile Include="HistoricalDataResponseListener.cs" />
+    <Compile Include="Models\Candle.cs" />
     <Compile Include="Models\Tick.cs" />
+    <Compile Include="PriceHistoryListener.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="SessionStatusListener.cs" />
   </ItemGroup>

@@ -51,5 +51,15 @@ namespace TradingBot.FXCM
         {
             return new FXCMMarketData(session);
         }
+
+        public FXCMChartData GetChartData()
+        {
+            return new FXCMChartData(session);
+        }
+
+        public FXCMPriceHistory GetPriceHistory()
+        {
+            return new FXCMPriceHistory(session);
+        }
     }
 }

@@ -12,26 +12,34 @@ namespace TradingBot.App
             FXCMConnection fxcm = new FXCMConnection();
 
             bool connected = fxcm.Connect(
-                "{Account number}",
-                "{Password}",
+                "86082266",
+                "Hoang1997!",
                 "http://www.fxcorporate.com/Hosts.jsp",
                 "Real"
             );
 
+            Console.WriteLine(
+               "Connected: " + connected
+            );
+
             if (connected)
             {
-                FXCMMarketData marketData =
-                        fxcm.GetMarketData();
-                    
+                var history = fxcm.GetPriceHistory();
 
-                marketData.Subscribe(
-                    "EUR/USD"
-                );
+                var candles =
+                    history.GetCandles(
+                        "XAU/USD",
+                        "m1",
+                        DateTime.UtcNow.AddMinutes(-10),
+                        DateTime.UtcNow
+                    );
+
+
+                foreach (var candle in candles)
+                {
+                    Console.WriteLine(candle);
+                }
             }
-
-            Console.WriteLine(
-                "Connected: " + connected
-            );
 
             Console.WriteLine("Bot running. Press ENTER to stop.");
 
