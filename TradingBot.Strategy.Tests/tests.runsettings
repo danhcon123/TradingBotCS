@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <!--
+    Native-dependent packages (Microsoft.Data.Sqlite's e_sqlite3.dll) fail to load under
+    the default .NET Framework test host because it shadow-copies the test assembly into a
+    temp folder without the nested runtimes\win-x64\native\ subfolder. Disabling AppDomain
+    execution runs the tests directly from the build output directory instead, where that
+    subfolder actually exists.
+  -->
+  <RunConfiguration>
+    <DisableAppDomain>true</DisableAppDomain>
+  </RunConfiguration>
+</RunSettings>

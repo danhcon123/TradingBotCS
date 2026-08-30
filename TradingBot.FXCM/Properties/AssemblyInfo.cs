@@ -31,3 +31,8 @@ using System.Runtime.InteropServices;
 //
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
+
+// Allows the test project to exercise internal-only strategy APIs (e.g.
+// LevelIntersectionDetector.GetPrimaryIntersection) that are intentionally not part of the
+// public surface consumed outside the strategy layer.
+[assembly: InternalsVisibleTo("TradingBot.Strategy.Tests")]

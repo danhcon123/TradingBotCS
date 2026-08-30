@@ -3,6 +3,10 @@
 ##
 ## Get latest from `dotnet new gitignore`
 
+# NOTE: data/candles.db is intentionally tracked in git (not ignored) so the backfilled
+# XAU/USD history is available for backtesting on any machine without re-hitting the FXCM
+# API. This is a deliberate short-term choice - revisit as the file grows.
+
 # dotenv files
 .env
 
