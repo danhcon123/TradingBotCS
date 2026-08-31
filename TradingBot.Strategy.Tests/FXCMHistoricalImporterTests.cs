@@ -113,7 +113,7 @@ namespace TradingBot.Strategy.Tests
 
             Assert.Equal(2, result.ChunksSucceeded);
             Assert.Equal(2, result.CandlesReceived);
-            Assert.Equal(2, result.CandlesInserted);
+            Assert.Equal(2, result.CandlesWritten);
 
             var stored = repo.GetCandles("XAU/USD", "H1", from, to);
             Assert.Equal(2, stored.Count);
@@ -236,7 +236,7 @@ namespace TradingBot.Strategy.Tests
             Assert.Equal(1, result.ChunksSucceeded);
             Assert.Equal(0, result.ChunksFailed);
             Assert.Empty(result.FailedChunks);
-            Assert.Equal(1, result.CandlesInserted);
+            Assert.Equal(1, result.CandlesWritten);
         }
 
         // ---------------------------------------------------------------
@@ -305,7 +305,7 @@ namespace TradingBot.Strategy.Tests
             Assert.Single(fetcher.Calls);
             Assert.Equal(gapStart, fetcher.Calls[0].From);
             Assert.Equal(1, result.ChunksSucceeded);
-            Assert.Equal(1, result.CandlesInserted);
+            Assert.Equal(1, result.CandlesWritten);
 
             var stored = repo.GetCandles("XAU/USD", "H1", gapStart, laterAlreadyStored.AddMinutes(1));
             Assert.Equal(2, stored.Count); // the filled gap + the pre-existing later candle
@@ -470,9 +470,9 @@ namespace TradingBot.Strategy.Tests
             ImportResult first = importer.Import("XAU/USD", "H1", from, to, TimeSpan.FromHours(1));
             ImportResult second = importer.Import("XAU/USD", "H1", from, to, TimeSpan.FromHours(1));
 
-            Assert.Equal(1, first.CandlesInserted);
+            Assert.Equal(1, first.CandlesWritten);
             Assert.Equal(1, second.CandlesReceived);
-            Assert.Equal(0, second.CandlesInserted); // already present - unique index ignored it
+            Assert.Equal(0, second.CandlesWritten); // already present - unique index ignored it
 
             Assert.Equal(1, repo.GetCandleCount("XAU/USD", "H1"));
         }

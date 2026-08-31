@@ -6,6 +6,9 @@
     <LangVersion>7.3</LangVersion>
     <IsPackable>false</IsPackable>
     <Nullable>disable</Nullable>
+    <Platforms>AnyCPU;x64</Platforms>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,10 +21,20 @@
     <!-- Referenced directly (not just transitively via TradingBot.FXCM) so its native
          e_sqlite3.dll asset actually gets copied to this project's own output directory. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- Pinned explicitly: net48 restore otherwise resolves an older
+         System.Runtime.CompilerServices.Unsafe than what Microsoft.Data.Sqlite's
+         netstandard2.0 build was compiled against (assembly version 6.0.0.0),
+         causing a FileLoadException at runtime when SQLitePCL opens a connection. -->
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\TradingBot.FXCM\TradingBot.FXCM.csproj" />
+    <ProjectReference Include="..\TradingBot.App\TradingBot.App.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

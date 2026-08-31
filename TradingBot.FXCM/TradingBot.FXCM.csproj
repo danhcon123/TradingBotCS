@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
+    <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>7.3</LangVersion>
     <RootNamespace>TradingBot.FXCM</RootNamespace>

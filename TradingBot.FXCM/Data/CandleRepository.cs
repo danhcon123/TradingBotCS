@@ -81,7 +81,7 @@ namespace TradingBot.FXCM.Data
                 return 0;
             }
 
-            int inserted = 0;
+            int affected = 0;
 
             using (SqliteConnection connection = OpenConnection())
             using (SqliteTransaction transaction = connection.BeginTransaction())
@@ -90,10 +90,25 @@ namespace TradingBot.FXCM.Data
                 {
                     command.Transaction = transaction;
                     command.CommandText = @"
-                        INSERT OR IGNORE INTO Candles
+                        INSERT INTO Candles
                             (Instrument, Timeframe, TimestampUtc, Open, High, Low, Close, Volume)
                         VALUES
-                            (@instrument, @timeframe, @timestampUtc, @open, @high, @low, @close, @volume);
+                            (@instrument, @timeframe, @timestampUtc, @open, @high, @low, @close, @volume)
+
+                        ON CONFLICT(Instrument, Timeframe, TimestampUtc)
+                        DO UPDATE SET
+                            Open = excluded.Open,
+                            High = excluded.High,
+                            Low = excluded.Low,
+                            Close = excluded.Close,
+                            Volume = excluded.Volume
+
+                        WHERE
+                               Candles.Open   <> excluded.Open
+                            OR Candles.High   <> excluded.High
+                            OR Candles.Low    <> excluded.Low
+                            OR Candles.Close  <> excluded.Close
+                            OR Candles.Volume <> excluded.Volume;
                     ";
 
                     SqliteParameter instrumentParam = command.Parameters.Add("@instrument", SqliteType.Text);
@@ -122,14 +137,14 @@ namespace TradingBot.FXCM.Data
                         closeParam.Value = candle.Close;
                         volumeParam.Value = candle.Volume;
 
-                        inserted += command.ExecuteNonQuery();
+                        affected += command.ExecuteNonQuery();
                     }
                 }
 
                 transaction.Commit();
             }
 
-            return inserted;
+            return affected;
         }
 
         /// <summary>

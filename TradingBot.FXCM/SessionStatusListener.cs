@@ -60,7 +60,12 @@ namespace TradingBot.FXCM
 
         public bool WaitEvents()
         {
-            return mSyncSessionEvent.WaitOne(30000);
+            return WaitEvents(30000);
+        }
+
+        public bool WaitEvents(int timeoutMs)
+        {
+            return mSyncSessionEvent.WaitOne(timeoutMs);
         }
 
         public void onSessionStatusChanged(O2GSessionStatusCode status)

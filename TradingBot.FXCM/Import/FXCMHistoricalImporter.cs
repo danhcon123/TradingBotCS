@@ -9,19 +9,15 @@ using TradingBot.FXCM.Models;
 namespace TradingBot.FXCM.Import
 {
     /// <summary>
-    /// Downloads historical candles in fixed-size chunks and saves each one to a
-    /// <see cref="CandleRepository"/> immediately after receiving it, rather than
-    /// accumulating the whole range in memory and saving once at the end. Combined with the
-    /// repository's unique-index idempotency, this makes the importer safe to interrupt and
-    /// re-run any number of times: a re-run resumes from the latest stored candle instead of
-    /// starting over, and any chunk that failed simply gets requested again next run, since
-    /// it never advanced the resume point.
+    /// Downloads historical candles in fixed-size chunks and saves each successful
+    /// chunk immediately.
     ///
-    /// Depends on a plain fetch delegate rather than <c>FXCMPriceHistory</c> directly, so the
-    /// chunking/retry/resume/dedup policy here is fully unit-testable with a fake delegate,
-    /// without a live FXCM session. In production, <c>FXCMPriceHistory.GetCandles</c> already
-    /// matches this delegate's signature and can be passed straight in
-    /// (<c>new FXCMHistoricalImporter(history.GetCandles, repository)</c>).
+    /// The repository is responsible for idempotent writes:
+    /// - new candles are inserted,
+    /// - existing candles with changed OHLCV values are updated,
+    /// - identical existing candles are ignored.
+    ///
+    /// This makes the importer safe to interrupt and re-run.
     /// </summary>
     public class FXCMHistoricalImporter
     {
@@ -38,32 +34,52 @@ namespace TradingBot.FXCM.Import
             TimeSpan? requestTimeout = null,
             int maxRetriesPerChunk = 3)
         {
-            _fetchCandles = fetchCandles ?? throw new ArgumentNullException(nameof(fetchCandles));
-            _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+            _fetchCandles =
+                fetchCandles ??
+                throw new ArgumentNullException(nameof(fetchCandles));
+
+            _repository =
+                repository ??
+                throw new ArgumentNullException(nameof(repository));
 
             if (maxRetriesPerChunk <= 0)
             {
                 throw new ArgumentOutOfRangeException(
-                    nameof(maxRetriesPerChunk), maxRetriesPerChunk, "Must be greater than zero.");
+                    nameof(maxRetriesPerChunk),
+                    maxRetriesPerChunk,
+                    "Must be greater than zero.");
             }
 
-            _requestDelay = requestDelay ?? TimeSpan.FromSeconds(1);
-            _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(30);
-            _maxRetriesPerChunk = maxRetriesPerChunk;
+            _requestDelay =
+                requestDelay ?? TimeSpan.FromSeconds(1);
+
+            _requestTimeout =
+                requestTimeout ?? TimeSpan.FromSeconds(30);
+
+            _maxRetriesPerChunk =
+                maxRetriesPerChunk;
         }
 
         /// <summary>
-        /// Determines where a download should actually start: the later of
-        /// <paramref name="requestedFromUtc"/> and the latest candle already stored for
-        /// (instrument, timeframe). Deliberately does NOT add a margin past the latest
-        /// stored candle - re-requesting it is harmless (the repository's unique index
-        /// silently ignores the duplicate) and this avoids ever risking a gap through an
-        /// off-by-one in this calculation.
+        /// Determines where an import should resume.
+        ///
+        /// We deliberately resume FROM the newest stored candle rather than from
+        /// the candle after it. Re-requesting the latest candle is intentional:
+        /// CandleRepository can update it if FXCM later provides corrected OHLCV
+        /// values, while an identical candle becomes a no-op.
         /// </summary>
-        public DateTime ResolveResumeStartUtc(string instrument, string timeframe, DateTime requestedFromUtc)
+        public DateTime ResolveResumeStartUtc(
+            string instrument,
+            string timeframe,
+            DateTime requestedFromUtc)
         {
-            DateTime? latest = _repository.GetLatestTimestampUtc(instrument, timeframe);
-            if (latest.HasValue && latest.Value > requestedFromUtc)
+            DateTime? latest =
+                _repository.GetLatestTimestampUtc(
+                    instrument,
+                    timeframe);
+
+            if (latest.HasValue &&
+                latest.Value > requestedFromUtc)
             {
                 return latest.Value;
             }
@@ -72,32 +88,51 @@ namespace TradingBot.FXCM.Import
         }
 
         /// <summary>
-        /// Downloads and saves [fromUtc, toUtc) in chunks of <paramref name="chunkSize"/>,
-        /// skipping any leading range already present (see <see cref="ResolveResumeStartUtc"/>).
-        /// Each chunk is saved to the repository immediately upon receipt, so interrupting
-        /// the run partway through never loses already-downloaded data. A chunk that fails
-        /// (exception or timeout) is retried up to the configured retry budget with a delay
-        /// between attempts; if it still fails, it is recorded in the result and the import
-        /// continues with the next chunk rather than aborting the whole run.
+        /// Downloads and stores [fromUtc, toUtc) in fixed-size chunks.
+        ///
+        /// Failed chunks are recorded instead of aborting the entire import.
+        /// They can later be passed to RetryFailedChunks().
         /// </summary>
-        public ImportResult Import(string instrument, string timeframe, DateTime fromUtc, DateTime toUtc, TimeSpan chunkSize)
+        public ImportResult Import(
+            string instrument,
+            string timeframe,
+            DateTime fromUtc,
+            DateTime toUtc,
+            TimeSpan chunkSize)
         {
             if (string.IsNullOrWhiteSpace(instrument))
             {
-                throw new ArgumentException("Instrument must not be null or empty.", nameof(instrument));
+                throw new ArgumentException(
+                    "Instrument must not be null or empty.",
+                    nameof(instrument));
             }
 
             if (string.IsNullOrWhiteSpace(timeframe))
             {
-                throw new ArgumentException("Timeframe must not be null or empty.", nameof(timeframe));
+                throw new ArgumentException(
+                    "Timeframe must not be null or empty.",
+                    nameof(timeframe));
             }
 
             if (chunkSize <= TimeSpan.Zero)
             {
-                throw new ArgumentOutOfRangeException(nameof(chunkSize), chunkSize, "Must be greater than zero.");
+                throw new ArgumentOutOfRangeException(
+                    nameof(chunkSize),
+                    chunkSize,
+                    "Must be greater than zero.");
             }
 
-            DateTime resumeFromUtc = ResolveResumeStartUtc(instrument, timeframe, fromUtc);
+            if (toUtc <= fromUtc)
+            {
+                throw new ArgumentException(
+                    "toUtc must be later than fromUtc.");
+            }
+
+            DateTime resumeFromUtc =
+                ResolveResumeStartUtc(
+                    instrument,
+                    timeframe,
+                    fromUtc);
 
             var result = new ImportResult
             {
@@ -106,7 +141,8 @@ namespace TradingBot.FXCM.Import
                 RequestedFromUtc = fromUtc,
                 RequestedToUtc = toUtc,
                 ActualFromUtc = resumeFromUtc,
-                FailedChunks = new List<ImportChunkFailure>()
+                FailedChunks =
+                    new List<ImportChunkFailure>()
             };
 
             if (resumeFromUtc >= toUtc)
@@ -115,18 +151,29 @@ namespace TradingBot.FXCM.Import
                 return result;
             }
 
-            var failedChunks = new List<ImportChunkFailure>();
-            DateTime chunkStart = resumeFromUtc;
+            var failedChunks =
+                new List<ImportChunkFailure>();
+
+            DateTime chunkStart =
+                resumeFromUtc;
 
             while (chunkStart < toUtc)
             {
-                DateTime chunkEnd = chunkStart + chunkSize;
+                DateTime chunkEnd =
+                    chunkStart + chunkSize;
+
                 if (chunkEnd > toUtc)
                 {
                     chunkEnd = toUtc;
                 }
 
-                ProcessSingleChunk(instrument, timeframe, chunkStart, chunkEnd, result, failedChunks);
+                ProcessSingleChunk(
+                    instrument,
+                    timeframe,
+                    chunkStart,
+                    chunkEnd,
+                    result,
+                    failedChunks);
 
                 chunkStart = chunkEnd;
 
@@ -136,33 +183,40 @@ namespace TradingBot.FXCM.Import
                 }
             }
 
-            result.FailedChunks = failedChunks;
+            result.FailedChunks =
+                failedChunks;
+
             return result;
         }
 
         /// <summary>
-        /// Re-attempts exactly the chunk ranges recorded in a previous
-        /// <see cref="ImportResult.FailedChunks"/> (from <see cref="Import"/> or a prior call
-        /// to this method). Deliberately bypasses <see cref="ResolveResumeStartUtc"/> - those
-        /// chunks are known, specific gaps to fill, not a linear continuation point. This
-        /// matters because a middle chunk can fail while a later chunk succeeds (the later
-        /// chunk's download doesn't depend on the earlier one), and the repository's "latest
-        /// timestamp" would then already be past the earlier gap - <see cref="Import"/> alone
-        /// would think that range is already covered and silently never retry it.
+        /// Retries specifically failed chunk ranges.
+        ///
+        /// This deliberately does not use ResolveResumeStartUtc(), because a failed
+        /// chunk may be located before newer candles that were successfully imported.
         /// </summary>
-        public ImportResult RetryFailedChunks(string instrument, string timeframe, IEnumerable<ImportChunkFailure> failedChunks)
+        public ImportResult RetryFailedChunks(
+            string instrument,
+            string timeframe,
+            IEnumerable<ImportChunkFailure> failedChunks)
         {
             if (string.IsNullOrWhiteSpace(instrument))
             {
-                throw new ArgumentException("Instrument must not be null or empty.", nameof(instrument));
+                throw new ArgumentException(
+                    "Instrument must not be null or empty.",
+                    nameof(instrument));
             }
 
             if (string.IsNullOrWhiteSpace(timeframe))
             {
-                throw new ArgumentException("Timeframe must not be null or empty.", nameof(timeframe));
+                throw new ArgumentException(
+                    "Timeframe must not be null or empty.",
+                    nameof(timeframe));
             }
 
-            List<ImportChunkFailure> chunksToRetry = (failedChunks ?? Enumerable.Empty<ImportChunkFailure>())
+            List<ImportChunkFailure> chunksToRetry =
+                (failedChunks ??
+                 Enumerable.Empty<ImportChunkFailure>())
                 .Where(f => f != null)
                 .OrderBy(f => f.ChunkStartUtc)
                 .ToList();
@@ -171,18 +225,45 @@ namespace TradingBot.FXCM.Import
             {
                 Instrument = instrument,
                 Timeframe = timeframe,
-                RequestedFromUtc = chunksToRetry.Count > 0 ? chunksToRetry[0].ChunkStartUtc : default(DateTime),
-                RequestedToUtc = chunksToRetry.Count > 0 ? chunksToRetry[chunksToRetry.Count - 1].ChunkEndUtc : default(DateTime),
-                ActualFromUtc = chunksToRetry.Count > 0 ? chunksToRetry[0].ChunkStartUtc : default(DateTime),
-                AlreadyUpToDate = chunksToRetry.Count == 0
+
+                RequestedFromUtc =
+                    chunksToRetry.Count > 0
+                        ? chunksToRetry[0].ChunkStartUtc
+                        : default(DateTime),
+
+                RequestedToUtc =
+                    chunksToRetry.Count > 0
+                        ? chunksToRetry[
+                            chunksToRetry.Count - 1]
+                            .ChunkEndUtc
+                        : default(DateTime),
+
+                ActualFromUtc =
+                    chunksToRetry.Count > 0
+                        ? chunksToRetry[0].ChunkStartUtc
+                        : default(DateTime),
+
+                AlreadyUpToDate =
+                    chunksToRetry.Count == 0
             };
 
-            var stillFailed = new List<ImportChunkFailure>();
+            var stillFailed =
+                new List<ImportChunkFailure>();
 
-            for (int i = 0; i < chunksToRetry.Count; i++)
+            for (int i = 0;
+                 i < chunksToRetry.Count;
+                 i++)
             {
-                ImportChunkFailure chunk = chunksToRetry[i];
-                ProcessSingleChunk(instrument, timeframe, chunk.ChunkStartUtc, chunk.ChunkEndUtc, result, stillFailed);
+                ImportChunkFailure chunk =
+                    chunksToRetry[i];
+
+                ProcessSingleChunk(
+                    instrument,
+                    timeframe,
+                    chunk.ChunkStartUtc,
+                    chunk.ChunkEndUtc,
+                    result,
+                    stillFailed);
 
                 if (i < chunksToRetry.Count - 1)
                 {
@@ -190,7 +271,9 @@ namespace TradingBot.FXCM.Import
                 }
             }
 
-            result.FailedChunks = stillFailed;
+            result.FailedChunks =
+                stillFailed;
+
             return result;
         }
 
@@ -202,81 +285,176 @@ namespace TradingBot.FXCM.Import
             ImportResult result,
             List<ImportChunkFailure> failedChunks)
         {
-            ChunkOutcome outcome = DownloadChunkWithRetry(instrument, timeframe, chunkStart, chunkEnd);
+            ChunkOutcome outcome =
+                DownloadChunkWithRetry(
+                    instrument,
+                    timeframe,
+                    chunkStart,
+                    chunkEnd);
 
             if (outcome.Succeeded)
             {
-                int inserted = _repository.SaveCandles(instrument, timeframe, outcome.Candles);
+                /*
+                 * FXCM may occasionally return candles around the requested
+                 * boundaries. Only persist candles that actually belong to
+                 * this chunk:
+                 *
+                 *      chunkStart <= Time < chunkEnd
+                 */
+                List<Candle> candlesInChunk =
+                    outcome.Candles
+                        .Where(c =>
+                            c != null &&
+                            c.Time >= chunkStart &&
+                            c.Time < chunkEnd)
+                        .OrderBy(c => c.Time)
+                        .ToList();
+
+                int written =
+                    _repository.SaveCandles(
+                        instrument,
+                        timeframe,
+                        candlesInChunk);
+
                 result.ChunksSucceeded++;
-                result.CandlesReceived += outcome.Candles.Count;
-                result.CandlesInserted += inserted;
+
+                /*
+                 * CandlesReceived intentionally counts what FXCM returned
+                 * before boundary filtering/de-duplication.
+                 */
+                result.CandlesReceived +=
+                    outcome.Candles.Count;
+
+                /*
+                 * Written means:
+                 *   INSERTED new candle
+                 *          OR
+                 *   UPDATED existing changed candle
+                 *
+                 * Identical candles count as zero.
+                 */
+                result.CandlesWritten +=
+                    written;
             }
             else
             {
                 result.ChunksFailed++;
-                failedChunks.Add(new ImportChunkFailure
-                {
-                    ChunkStartUtc = chunkStart,
-                    ChunkEndUtc = chunkEnd,
-                    Attempts = outcome.Attempts,
-                    LastErrorMessage = outcome.LastErrorMessage
-                });
+
+                failedChunks.Add(
+                    new ImportChunkFailure
+                    {
+                        ChunkStartUtc =
+                            chunkStart,
+
+                        ChunkEndUtc =
+                            chunkEnd,
+
+                        Attempts =
+                            outcome.Attempts,
+
+                        LastErrorMessage =
+                            outcome.LastErrorMessage
+                    });
             }
         }
 
-        private ChunkOutcome DownloadChunkWithRetry(string instrument, string timeframe, DateTime chunkStart, DateTime chunkEnd)
+        private ChunkOutcome DownloadChunkWithRetry(
+            string instrument,
+            string timeframe,
+            DateTime chunkStart,
+            DateTime chunkEnd)
         {
             string lastError = null;
 
-            for (int attempt = 1; attempt <= _maxRetriesPerChunk; attempt++)
+            for (int attempt = 1;
+                 attempt <= _maxRetriesPerChunk;
+                 attempt++)
             {
                 try
                 {
-                    List<Candle> candles = FetchWithTimeout(instrument, timeframe, chunkStart, chunkEnd);
-                    return ChunkOutcome.Success(candles, attempt);
+                    List<Candle> candles =
+                        FetchWithTimeout(
+                            instrument,
+                            timeframe,
+                            chunkStart,
+                            chunkEnd);
+
+                    return ChunkOutcome.Success(
+                        candles,
+                        attempt);
                 }
                 catch (Exception ex)
                 {
-                    lastError = DescribeException(ex);
+                    lastError =
+                        DescribeException(ex);
 
-                    if (attempt < _maxRetriesPerChunk)
+                    if (attempt <
+                        _maxRetriesPerChunk)
                     {
                         Sleep(_requestDelay);
                     }
                 }
             }
 
-            return ChunkOutcome.Failure(_maxRetriesPerChunk, lastError);
+            return ChunkOutcome.Failure(
+                _maxRetriesPerChunk,
+                lastError);
         }
 
         /// <summary>
-        /// Bounds the fetch call with a timeout. This is a safety net for a scenario the
-        /// underlying FXCM listener itself cannot signal: if the connection dies mid-request,
-        /// its wait loop has no timeout and would otherwise block this importer forever. The
-        /// background task cannot actually be cancelled if it times out - it is simply no
-        /// longer waited on - so this bounds THIS importer's progress, not the underlying
-        /// call's lifetime; a genuinely hung request still leaks a thread-pool thread.
+        /// Secondary safety timeout around the fetch delegate.
+        ///
+        /// PriceHistoryListener also has its own completion timeout. This
+        /// importer-level timeout prevents a broken fetch implementation from
+        /// blocking the entire historical import indefinitely.
+        ///
+        /// Task.Run cannot forcibly cancel the underlying FXCM request, so the
+        /// listener itself must also have a timeout.
         /// </summary>
-        private List<Candle> FetchWithTimeout(string instrument, string timeframe, DateTime chunkStart, DateTime chunkEnd)
+        private List<Candle> FetchWithTimeout(
+            string instrument,
+            string timeframe,
+            DateTime chunkStart,
+            DateTime chunkEnd)
         {
-            Task<List<Candle>> task = Task.Run(() => _fetchCandles(instrument, timeframe, chunkStart, chunkEnd));
+            Task<List<Candle>> task =
+                Task.Run(
+                    () => _fetchCandles(
+                        instrument,
+                        timeframe,
+                        chunkStart,
+                        chunkEnd));
 
             if (!task.Wait(_requestTimeout))
             {
                 throw new TimeoutException(
-                    $"Timed out after {_requestTimeout} waiting for {instrument} {timeframe} " +
-                    $"{chunkStart:yyyy-MM-dd HH:mm} - {chunkEnd:yyyy-MM-dd HH:mm}.");
+                    $"Timed out after {_requestTimeout} waiting for " +
+                    $"{instrument} {timeframe} " +
+                    $"{chunkStart:yyyy-MM-dd HH:mm} - " +
+                    $"{chunkEnd:yyyy-MM-dd HH:mm}.");
             }
 
             return task.Result;
         }
 
-        private static string DescribeException(Exception ex)
+        private static string DescribeException(
+            Exception ex)
         {
-            return ex is AggregateException aggregate ? aggregate.GetBaseException().Message : ex.Message;
+            AggregateException aggregate =
+                ex as AggregateException;
+
+            if (aggregate != null)
+            {
+                return aggregate
+                    .GetBaseException()
+                    .Message;
+            }
+
+            return ex.Message;
         }
 
-        private static void Sleep(TimeSpan delay)
+        private static void Sleep(
+            TimeSpan delay)
         {
             if (delay > TimeSpan.Zero)
             {
@@ -287,18 +465,44 @@ namespace TradingBot.FXCM.Import
         private struct ChunkOutcome
         {
             public bool Succeeded;
+
             public List<Candle> Candles;
+
             public int Attempts;
+
             public string LastErrorMessage;
 
-            public static ChunkOutcome Success(List<Candle> candles, int attempts)
+            public static ChunkOutcome Success(
+                List<Candle> candles,
+                int attempts)
             {
-                return new ChunkOutcome { Succeeded = true, Candles = candles ?? new List<Candle>(), Attempts = attempts };
+                return new ChunkOutcome
+                {
+                    Succeeded = true,
+
+                    Candles =
+                        candles ??
+                        new List<Candle>(),
+
+                    Attempts =
+                        attempts
+                };
             }
 
-            public static ChunkOutcome Failure(int attempts, string lastErrorMessage)
+            public static ChunkOutcome Failure(
+                int attempts,
+                string lastErrorMessage)
             {
-                return new ChunkOutcome { Succeeded = false, Attempts = attempts, LastErrorMessage = lastErrorMessage };
+                return new ChunkOutcome
+                {
+                    Succeeded = false,
+
+                    Attempts =
+                        attempts,
+
+                    LastErrorMessage =
+                        lastErrorMessage
+                };
             }
         }
     }

@@ -32,39 +32,44 @@ namespace TradingBot.FXCM
 
 
             communicator.addListener(listener);
+            try { 
+                O2GTimeframe fxcmTimeframe =
+                    communicator
+                        .TimeframeFactory
+                        .create(timeframe);
 
 
-            O2GTimeframe fxcmTimeframe =
-                communicator
-                    .TimeframeFactory
-                    .create(timeframe);
+                var request =
+                    communicator.createRequest(
+                        instrument,
+                        fxcmTimeframe,
+                        from,
+                        to,
+                        100
+                    );
 
 
-            var request =
-                communicator.createRequest(
-                    instrument,
-                    fxcmTimeframe,
-                    from,
-                    to,
-                    100
+                Console.WriteLine(
+                    "Sending price history request..."
                 );
 
 
-            Console.WriteLine(
-                "Sending price history request..."
-            );
+                communicator.sendRequest(request);
 
 
-            communicator.sendRequest(request);
+                listener.Wait();
 
 
-            listener.Wait();
+                communicator.removeListener(listener);
 
 
-            communicator.removeListener(listener);
+                return listener.Candles;
+            }
 
-
-            return listener.Candles;
+            finally
+            {
+                communicator.removeListener(listener);
+            }
         }
     }
 }

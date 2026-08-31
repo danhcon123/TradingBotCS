@@ -1,8 +1,44 @@
 # Current Status
 
-Last updated after: building and wiring the backtester, fixing an integrity-check
-reporting bug. See `PROJECT_OVERVIEW.md` for architecture and `INSTRUCTIONS.md` for
-build/run/test commands.
+Last updated after: building `LiveSignalRunner` (continuous live signal streaming) and
+refactoring `Program.cs` into a thin, three-mode entry point. See `PROJECT_OVERVIEW.md` for
+architecture, `INSTRUCTIONS.md` for build/run/test commands, and
+`features/live-signal-streaming.md` for the full write-up of everything in this section.
+
+## What was just built: live signal streaming
+
+`TradingBot.App/Live/LiveSignalRunner.cs` runs the existing (unchanged) `DragonflyStrategy`
+continuously against live FXCM data — one full loop of
+`FXCM → closed M1 candle → strategy → NONE/BUY → continue`, on a UTC-minute schedule, with
+error/no-data backoff, until Ctrl+C. Nothing in the strategy, `Backtester`, or the H1/M1
+rules was touched to build this.
+
+Three real bugs were found and fixed during review (not just at first-draft time):
+1. A long FXCM outage could silently lose candles — the fetch window now widens back to
+   `lastProcessedM1Utc` after any gap, instead of a fixed 5-minute lookback that could skip
+   over an extended outage.
+2. A partially-failed H1 startup backfill was silently accepted as sufficient — it now
+   fails startup and retries until the reference history is genuinely complete.
+3. The very first data seen after starting with no baseline (e.g. bot started while the
+   market was closed) could evaluate a whole backlog of candles as live signals instead of
+   just marking a baseline — fixed to always establish-only, never replay, exactly like the
+   normal startup path.
+
+`Program.cs` was also refactored from "always backfill 3 months, then backtest, then go
+live" into a thin entry point with three explicit modes (`dotnet run`,
+`dotnet run -- --historical`, `dotnet run -- --historical-then-live`), each opening its own
+database (`data/candles.db` for live, `data/candles-3months.db` for historical — never
+mixed). The old inline historical/backtest code moved, unchanged, into
+`TradingBot.App/Historical/HistoricalWorkflowRunner.cs`.
+
+**Open issue:** Ctrl+C during live mode still doesn't reliably return control to the shell
+on its own. A 15-second watchdog now force-terminates the process regardless, so the
+process is guaranteed to exit, but the actual stall hasn't been root-caused yet (no live
+FXCM session available to debug it further in this environment). See
+`features/live-signal-streaming.md` for the full investigation log.
+
+**201/201 tests passing**, `dotnet build TradingBotCS.sln -c Debug -p:Platform=x64` → 3
+succeeded, 0 warnings, 0 errors.
 
 ## What works right now
 
