@@ -8,6 +8,7 @@ using TradingBot.FXCM.Data;
 using TradingBot.FXCM.Import;
 using TradingBot.FXCM.Models;
 using TradingBot.FXCM.Settings;
+using TradingBot.FXCM.Strategy;
 
 namespace TradingBot.App
 {
@@ -23,7 +24,7 @@ namespace TradingBot.App
         // FXCMPriceHistory.GetCandles caps each response at 100 bars, so the importer pulls
         // a multi-day window in fixed-size chunks. Kept well under the 100-bar cap for each
         // timeframe as a safety margin.
-        private static readonly TimeSpan M1ChunkSize = TimeSpan.FromMinutes(60);
+        private static readonly TimeSpan M1ChunkSize = TimeSpan.FromMinutes(90);
         private static readonly TimeSpan H1ChunkSize = TimeSpan.FromDays(3);
 
         // Conservative validation-scale window: enough to exercise the full backfill +
@@ -33,8 +34,8 @@ namespace TradingBot.App
         // exists well before the M1 window even starts) once this smaller run has been
         // verified end to end. The importer is resumable, so widening later and re-running
         // simply continues from what's already stored - it never re-downloads anything.
-        private static readonly TimeSpan M1LookbackWindow = TimeSpan.FromDays(2);
-        private static readonly TimeSpan H1LookbackWindow = TimeSpan.FromDays(45);
+        private static readonly TimeSpan M1LookbackWindow = TimeSpan.FromDays(90);
+        private static readonly TimeSpan H1LookbackWindow = TimeSpan.FromDays(135);
 
         private static readonly string DatabasePath = ResolveDatabasePath();
 
@@ -49,7 +50,7 @@ namespace TradingBot.App
         private static string ResolveDatabasePath()
         {
             string root = FindSolutionRootDirectory() ?? AppDomain.CurrentDomain.BaseDirectory;
-            return Path.Combine(root, "data", "candles.db");
+            return Path.Combine(root, "data", "candles-3months.db");
         }
 
         private static string FindSolutionRootDirectory()
@@ -73,7 +74,9 @@ namespace TradingBot.App
         {
             Console.WriteLine("Trading Bot Starting");
 
-            string dbDirectory = Path.GetDirectoryName(DatabasePath);
+            string dbDirectory =
+                Path.GetDirectoryName(DatabasePath);
+
             if (!string.IsNullOrEmpty(dbDirectory))
             {
                 Directory.CreateDirectory(dbDirectory);
@@ -81,33 +84,63 @@ namespace TradingBot.App
 
             Console.WriteLine($"Database: {DatabasePath}");
 
-            var repository = new CandleRepository(DatabasePath);
+            var repository =
+                new CandleRepository(DatabasePath);
 
-            // Backtesting only reads what has already been downloaded - it needs no live
-            // FXCM connection at all. This is the entire point of Phase 7A/7B: download
-            // once, then iterate on the strategy against stored data as many times as you
-            // like without touching the API again.
-            RunBacktest(repository);
+            var fxcm =
+                new FXCMConnection();
 
-            FXCMConnection fxcm = new FXCMConnection();
+            string login =
+                Environment.GetEnvironmentVariable("FXCM_LOGIN");
+
+            string password =
+                Environment.GetEnvironmentVariable("FXCM_PASSWORD");
+
+            if (string.IsNullOrWhiteSpace(login) ||
+                string.IsNullOrWhiteSpace(password))
+            {
+                throw new InvalidOperationException(
+                    "FXCM_LOGIN and FXCM_PASSWORD are not configured.");
+            }
 
             bool connected = fxcm.Connect(
-                "86082266",
-                "Hoang1997!",
+                login,
+                password,
                 "http://www.fxcorporate.com/Hosts.jsp",
-                "Real"
-            );
+                "Real");
 
-            Console.WriteLine(
-               "Connected: " + connected
-            );
+            Console.WriteLine("Connected: " + connected);
 
             if (connected)
             {
-                RunBackfillAndIntegrityCheck(fxcm, repository);
+                // Download/update first.
+                RunBackfillAndIntegrityCheck(
+                    fxcm,
+                    repository);
+            }
+            else
+            {
+                Console.WriteLine(
+                    "FXCM connection failed. " +
+                    "Using existing database.");
             }
 
-            Console.WriteLine("Bot running. Press ENTER to stop.");
+            // Optional check for the specific TradingView candle.
+            DateTime targetCandleUtc =
+                new DateTime(
+                    2026, 8, 31,
+                    14, 15, 0,
+                    DateTimeKind.Utc);
+
+            RunTargetCandleCheck(
+                repository,
+                targetCandleUtc);
+
+            // Backtest the complete stored database.
+            RunBacktest(repository);
+
+            Console.WriteLine(
+                "Processing complete. Press ENTER to exit.");
 
             Console.ReadLine();
         }
@@ -136,10 +169,47 @@ namespace TradingBot.App
                 return;
             }
 
-            // GetCandles is a half-open [from, to) range - extend by one second so the very
-            // last stored candle of each timeframe is actually included.
-            IReadOnlyList<Candle> m1Candles = repository.GetCandles(Instrument, M1Timeframe, m1FromUtc.Value, m1ToUtc.Value.AddSeconds(1));
-            IReadOnlyList<Candle> h1Candles = repository.GetCandles(Instrument, H1Timeframe, h1FromUtc.Value, h1ToUtc.Value.AddSeconds(1));
+            // Only include completed candles.
+            //
+            // Example at 12:34:27 UTC:
+            // - The 12:34 M1 candle is still forming.
+            // - completedM1Boundary is 12:34:00.
+            // - Because GetCandles uses [from, to), the 12:34 candle is excluded.
+            //
+            // For H1:
+            // - The 12:00 H1 candle is still forming until 13:00.
+            // - completedH1Boundary is 12:00:00.
+            // - Therefore, the 12:00 H1 candle is excluded.
+
+            DateTime nowUtc = DateTime.UtcNow;
+
+            DateTime completedM1Boundary = FloorToMinute(nowUtc);
+            DateTime completedH1Boundary = FloorToHour(nowUtc);
+
+            // Include the latest stored candle only when it is already completed.
+            DateTime m1QueryToUtc =
+                m1ToUtc.Value.AddSeconds(1) < completedM1Boundary
+                    ? m1ToUtc.Value.AddSeconds(1)
+                    : completedM1Boundary;
+
+            DateTime h1QueryToUtc =
+                h1ToUtc.Value.AddSeconds(1) < completedH1Boundary
+                    ? h1ToUtc.Value.AddSeconds(1)
+                    : completedH1Boundary;
+
+            IReadOnlyList<Candle> m1Candles =
+                repository.GetCandles(
+                    Instrument,
+                    M1Timeframe,
+                    m1FromUtc.Value,
+                    m1QueryToUtc);
+
+            IReadOnlyList<Candle> h1Candles =
+                repository.GetCandles(
+                    Instrument,
+                    H1Timeframe,
+                    h1FromUtc.Value,
+                    h1QueryToUtc);
 
             Console.WriteLine($"M1 range in database: {m1FromUtc:yyyy-MM-dd HH:mm} -> {m1ToUtc:yyyy-MM-dd HH:mm} UTC ({m1Candles.Count} candles)");
             Console.WriteLine($"H1 range in database: {h1FromUtc:yyyy-MM-dd HH:mm} -> {h1ToUtc:yyyy-MM-dd HH:mm} UTC ({h1Candles.Count} candles)");
@@ -202,6 +272,21 @@ namespace TradingBot.App
             Console.WriteLine();
             Console.WriteLine($"Lower Wick / Body: {analysis.LowerWickToBodyRatio}");
             Console.WriteLine();
+            Console.WriteLine($"Valid OHLC:             {analysis.IsValidOhlc}");
+            Console.WriteLine(
+                $"Has positive range:     {analysis.HasRange}");
+
+            Console.WriteLine(
+                $"Body percentage:        {analysis.BodyPercentage:F2}%");
+
+            Console.WriteLine(
+                $"Lower-wick rule passed: {analysis.LowerWickRulePassed}");
+
+            Console.WriteLine(
+                $"Body rule passed:       {analysis.BodyRulePassed}");
+
+            Console.WriteLine(
+                $"Upper-wick rule passed: {analysis.UpperWickRulePassed}");
             Console.WriteLine($"Previous-range comparison enabled: {analysis.PreviousRangeRuleEnabled}");
             Console.WriteLine($"Previous M1 range:                 {FormatNullable(analysis.PreviousRange)}");
             Console.WriteLine($"Current / Previous ratio:          {FormatNullable(analysis.CurrentToPreviousRangeRatio)}");
@@ -248,14 +333,18 @@ namespace TradingBot.App
         private static void RunBackfillAndIntegrityCheck(FXCMConnection fxcm, CandleRepository repository)
         {
             FXCMPriceHistory history = fxcm.GetPriceHistory();
-            var importer = new FXCMHistoricalImporter(history.GetCandles, repository);
+            var importer = new FXCMHistoricalImporter(history.GetCandles, repository, requestTimeout: TimeSpan.FromSeconds(40));
 
             DateTime nowUtc = DateTime.UtcNow;
-            DateTime m1FromUtc = nowUtc - M1LookbackWindow;
-            DateTime h1FromUtc = nowUtc - H1LookbackWindow;
 
-            BackfillTimeframe(importer, Instrument, M1Timeframe, m1FromUtc, nowUtc, M1ChunkSize);
-            BackfillTimeframe(importer, Instrument, H1Timeframe, h1FromUtc, nowUtc, H1ChunkSize);
+            DateTime m1ToUtc = FloorToMinute(nowUtc);
+            DateTime h1ToUtc = FloorToHour(nowUtc);
+
+            DateTime m1FromUtc = m1ToUtc - M1LookbackWindow;
+            DateTime h1FromUtc = h1ToUtc - H1LookbackWindow;
+
+            BackfillTimeframe(importer, Instrument, M1Timeframe, m1FromUtc, m1ToUtc, M1ChunkSize);
+            BackfillTimeframe(importer, Instrument, H1Timeframe, h1FromUtc, h1ToUtc, H1ChunkSize);
 
             RunIntegrityCheck(repository, Instrument, M1Timeframe, TimeSpan.FromMinutes(1));
             RunIntegrityCheck(repository, Instrument, H1Timeframe, TimeSpan.FromHours(1));
@@ -316,7 +405,9 @@ namespace TradingBot.App
 
             Console.WriteLine($"Actual start (after resume skip): {result.ActualFromUtc:yyyy-MM-dd HH:mm}");
             Console.WriteLine($"Chunks succeeded: {result.ChunksSucceeded}, failed: {result.ChunksFailed}");
-            Console.WriteLine($"Candles received: {result.CandlesReceived}, inserted (new): {result.CandlesInserted}");
+            Console.WriteLine(
+                $"Candles received: {result.CandlesReceived}, " +
+                $"written or updated: {result.CandlesWritten}");
         }
 
         /// <summary>
@@ -406,6 +497,132 @@ namespace TradingBot.App
                 {
                     Console.WriteLine($"  ... and {unexpectedGaps.Count - maxGapsToPrint} more.");
                 }
+            }
+        }
+
+        private static DateTime FloorToMinute(DateTime utc)
+        {
+            return new DateTime(
+                utc.Year, utc.Month, utc.Day,
+                utc.Hour, utc.Minute, 0,
+                DateTimeKind.Utc);
+        }
+
+        private static DateTime FloorToHour(DateTime utc)
+        {
+            return new DateTime(utc.Year, utc.Month, utc.Day,
+                utc.Hour, 0, 0,
+                DateTimeKind.Utc);
+        }
+
+        private static void RunTargetCandleCheck(
+    CandleRepository repository,
+    DateTime targetUtc)
+        {
+            Console.WriteLine();
+            Console.WriteLine("################################################");
+            Console.WriteLine("Target M1 candle check");
+            Console.WriteLine("################################################");
+
+            Console.WriteLine(
+                $"Requested UTC:   {targetUtc:yyyy-MM-dd HH:mm}");
+
+            Console.WriteLine(
+                $"Requested UTC-4: {targetUtc.AddHours(-4):yyyy-MM-dd HH:mm}");
+
+            // An M1 candle is only known after its closing time.
+            DateTime evaluationTimeUtc = targetUtc.AddMinutes(1);
+
+            if (DateTime.UtcNow < evaluationTimeUtc)
+            {
+                Console.WriteLine(
+                    $"The candle is not completed yet. It closes at " +
+                    $"{evaluationTimeUtc:yyyy-MM-dd HH:mm} UTC.");
+
+                return;
+            }
+
+            // Load enough M1 data to find the requested candle and its
+            // immediately preceding available candle.
+            IReadOnlyList<Candle> nearbyM1Candles =
+                repository.GetCandles(
+                    Instrument,
+                    M1Timeframe,
+                    targetUtc.AddHours(-1),
+                    targetUtc.AddMinutes(1));
+
+            Candle currentM1 = nearbyM1Candles
+                .FirstOrDefault(c => c.Time == targetUtc);
+
+            if (currentM1 == null)
+            {
+                Console.WriteLine(
+                    "The requested M1 candle is not in the database.");
+
+                return;
+            }
+
+            Candle previousM1 = nearbyM1Candles
+                .Where(c => c.Time < targetUtc)
+                .LastOrDefault();
+
+            if (previousM1 == null)
+            {
+                Console.WriteLine(
+                    "The previous M1 candle is not available.");
+
+                return;
+            }
+
+            DateTime? h1FromUtc =
+                repository.GetEarliestTimestampUtc(
+                    Instrument,
+                    H1Timeframe);
+
+            if (!h1FromUtc.HasValue)
+            {
+                Console.WriteLine(
+                    "No H1 history is available.");
+
+                return;
+            }
+
+            // Load H1 candles available up to the target evaluation time.
+            // DragonflyStrategy/H1LevelCalculator will perform the final
+            // completed-H1 availability check.
+            IReadOnlyList<Candle> h1Candles =
+                repository.GetCandles(
+                    Instrument,
+                    H1Timeframe,
+                    h1FromUtc.Value,
+                    evaluationTimeUtc.AddSeconds(1));
+
+            foreach (bool usePreviousRangeComparison in new[] { true, false })
+            {
+                Console.WriteLine();
+                Console.WriteLine(
+                    $"Target variant: UsePreviousRangeComparison = " +
+                    $"{usePreviousRangeComparison}");
+
+                var settings = new DragonflyStrategySettings
+                {
+                    TickSize = 0.01,
+                    UsePreviousRangeComparison =
+                        usePreviousRangeComparison
+                };
+
+                var strategy =
+                    new DragonflyStrategy(settings);
+
+                StrategyResult result =
+                    strategy.Evaluate(
+                        currentM1,
+                        previousM1,
+                        h1Candles);
+
+                PrintDragonflyDiagnostic(
+                    result,
+                    settings.H1ReferenceCount);
             }
         }
     }

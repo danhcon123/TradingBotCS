@@ -10,6 +10,7 @@
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <Prefer32Bit>false</Prefer32Bit>
     <Deterministic>true</Deterministic>
+    <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
 
   <ItemGroup>
@@ -35,10 +36,7 @@
     <ItemGroup>
       <ForexConnectNativeFiles Include="C:\Program Files\Candleworks\ForexConnectAPIx64\bin\**\*.dll" />
     </ItemGroup>
-    <Copy
-      SourceFiles="@(ForexConnectNativeFiles)"
-      DestinationFolder="$(TargetDir)%(RecursiveDir)"
-      SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(ForexConnectNativeFiles)" DestinationFolder="$(TargetDir)%(RecursiveDir)" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>
